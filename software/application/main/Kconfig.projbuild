@@ -1,0 +1,61 @@
+menu "Application Configuration"
+
+    config BORIS_HEARTBEAT_SERVO_PIN
+        int "Heartbeat servo pin"
+        default 7
+        help
+            GPIO pin wired to the control pin of a 180 degree servo that is the beating heart of Boris.
+
+    config BORIS_HEARTBEAT_SERVO_PWM_CHANNEL
+        int "PWM channel for the heartbeat servo"
+        default 1
+        help
+            THe PWM channel to use for the heartbeat servo.
+
+    config BORIS_HEARTBEAT_SERVO_PWM_TIMER
+        int "PWM timer for the heartbeat servo"
+        default 1
+        help
+            The timer to use for the heartbeat servo PWM.
+
+    config BORIS_CIGAR_LED_PIN
+        int "Cigar LED GPIO pin"
+        default 6
+        help
+            GPIO pin wired to the orange flickering LED at the end of the cigar.
+
+    config BORIS_CIGAR_LED_PWM_CHANNEL
+        int "Cigar LED PWM channel"
+        default 0
+        help
+            The PWM channel to use for the cigar.
+
+    config BORIS_CIGAR_LED_PWM_TIMER
+        int "Cigar PWM timer"
+        default 0
+        help
+            THe timer to use for cigar PWM.
+
+    config BORIS_EYES_WS2812_LED_PIN
+        int "Eyes (WS2812 LED) pin"
+        default 5
+        help
+            GPIO pin wired to the WS2812 LEDs that are in Boris's eyes.
+
+    config BORIS_EYES_WS2812_SPI_NUM
+        int "The SPI port to use for Boris's eyes"
+        default 1
+        range -1 2
+        help
+            The SPI to drive the WS2812 LEDs.  DO NOT USE 0 (which maps to SPI 1)
+            as that is hard-wired internally to flash memory.
+
+    config BORIS_EYES_WS2812_GRB
+        bool "Set this if the WS2812 LEDs use order GRB instead of RGB"
+        depends on BORIS_EYES_WS2812_SPI_NUM > 0
+        default y
+        help
+            The leaded WS2812 tri-colour LEDs tend to be GRB instead of RGB,
+            hence the default here is "y".
+
+endmenu
