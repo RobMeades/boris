@@ -34,6 +34,7 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_task_wdt.h"
+#include "esp_random.h"
 
 #include "fgr_util.h"
 #include "fgr_debug.h"
@@ -63,13 +64,10 @@
 // Peak-puff for the cigar.
 #define CIGAR_MAX_DUTY_LEVEL 255
 
-// The heartbeat update frequency, in milliseconds.
-#define HEARTBEAT_TICK_MS 10
-
 // Total period of one heartbeat cycle in milliseconds
 // (i.e. one "lub-dup" sequence plus the rest before the next).
 // 800 ms = 75 bpm is a resting adult heart rate, but
-// Boris is a bit more relaxed than that
+// Boris is a bit more relaxed than that.
 #define HEARTBEAT_PERIOD_MS 1600
 
 // Duration of the "lub" (first) pulse in milliseconds.
@@ -78,7 +76,7 @@
 // Duration of the "dup" (second) pulse in milliseconds.
 #define HEARTBEAT_DUP_MS 120
 
-// Gap between the end of "lub" and the start of "dup",
+// Gap between the end of "lub" and the start of "dup".
 #define HEARTBEAT_GAP_MS 180
 
 // Servo angle at rest, in degrees.
@@ -86,6 +84,15 @@
 
 // Servo angle at the peak of each pulse, in degrees.
 #define HEARTBEAT_PEAK_ANGLE 90
+
+// The maximum eye-flash interval in seconds
+#define EYES_INTERVAL_MAX_SECONDS 15
+
+// The minumum eye-flash interval in seconds
+#define EYES_INTERVAL_MIN_SECONDS 5
+
+// Eye flash duration in milliseconds
+#define EYES_FLASH_DURATION_MS 500
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -137,6 +144,7 @@ typedef struct {
 // Context.
 static context_t g_context = {0};
 
+#if defined(CONFIG_BORIS_CIGAR_LED_PIN) && (CONFIG_BORIS_CIGAR_LED_PIN >= 0)
 // Sine table for cigar puffs.
 // sin(2*pi*i/256) mapped to 0..255 (Q8 fixed point, 128 = midpoint)
 static const uint8_t g_cigar_sine[] = {
@@ -173,6 +181,24 @@ static const uint8_t g_cigar_sine[] = {
     78,  81,  84,  87,  90,  93,  96,  99,
     102, 105, 108, 112, 115, 118, 121, 124
 };
+#endif
+
+#if defined(CONFIG_BORIS_EYES_WS2812_LED_PIN) && (CONFIG_BORIS_EYES_WS2812_LED_PIN >= 0)
+// All the possible eye colours.
+static fgr_ws2812_colour_t g_eye_colour[] = {FGR_WS2812_LED_COLOUR_BRIGHT_RED,
+                                             FGR_WS2812_LED_COLOUR_BRIGHT_BLUE,
+                                             FGR_WS2812_LED_COLOUR_BRIGHT_GREEN,
+                                             FGR_WS2812_LED_COLOUR_BRIGHT_YELLOW,
+                                             FGR_WS2812_LED_COLOUR_BRIGHT_MAGENTA,
+                                             FGR_WS2812_LED_COLOUR_BRIGHT_CYAN};
+// The names of the eye colours.
+static char * g_eye_colour_name[] = {"red","blue", "green", "yellow", "magenta", "cyan"};
+
+// Do some checking
+_Static_assert (FGR_UTIL_ARRAY_LENGTH(g_eye_colour) == FGR_UTIL_ARRAY_LENGTH(g_eye_colour_name),
+                "the number of g_eye_colour_name[] entries does not match the number of eye colours!");
+
+#endif
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: CIGAR RELATED
@@ -360,7 +386,6 @@ static void task_heartbeat_cb(void *handle, void *param)
         break;
     }
 
-    // Not yet time to move on
     if (elapsed_us > phase_length_us) {
         switch (heartbeat->phase) {
             case HEARTBEAT_PHASE_REST:
@@ -502,8 +527,30 @@ void app_main(void)
     esp_err_t err = init(context);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "initialization complete.");
+#if defined(CONFIG_BORIS_EYES_WS2812_LED_PIN) && (CONFIG_BORIS_EYES_WS2812_LED_PIN >= 0)
+        int32_t seconds = 0;
+        int32_t last_eye_blink = seconds;
+        int32_t next_eye_flash_interval_seconds = 0;
+        size_t next_eye_colour_index = 0;
+#endif
         while (1) {
-            vTaskDelay(pdMS_TO_TICKS(3000));
+#if defined(CONFIG_BORIS_EYES_WS2812_LED_PIN) && (CONFIG_BORIS_EYES_WS2812_LED_PIN >= 0)
+            // The cigar and heartbeat all run automatically,
+            // just need to flash the eyes at a random interval
+            if (seconds - last_eye_blink >= next_eye_flash_interval_seconds) {
+                last_eye_blink = seconds;
+                eyes_t *eyes = &context->eyes;
+                size_t index = next_eye_colour_index;
+                next_eye_flash_interval_seconds = (((uint64_t) (EYES_INTERVAL_MAX_SECONDS - EYES_INTERVAL_MIN_SECONDS)) * esp_random() / UINT32_MAX) + EYES_INTERVAL_MIN_SECONDS;
+                next_eye_colour_index = ((uint64_t) FGR_UTIL_ARRAY_LENGTH(g_eye_colour)) * esp_random() / UINT32_MAX;
+                ESP_LOGI(TAG, "flashing eyes %s, next eye flash colour will be %s in %d second(s).",
+                         g_eye_colour_name[index], g_eye_colour_name[next_eye_colour_index], next_eye_flash_interval_seconds);
+                fgr_ws2812_led_flash(eyes->ws2812_handle, -1, EYES_FLASH_DURATION_MS,
+                                     g_eye_colour[index]);
+            }
+            seconds++;
+#endif
+            vTaskDelay(pdMS_TO_TICKS(1000));
             esp_task_wdt_reset();
         }
         esp_task_wdt_delete(NULL);
