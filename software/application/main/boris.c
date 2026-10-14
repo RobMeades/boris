@@ -302,8 +302,10 @@ static void cigar_deinit(cigar_t *cigar)
 // Initialise the eyes.
 static int32_t eyes_init(eyes_t *eyes)
 {
+    // Note: 3 eyes because we have an additional "booster" LED close to the ESP32 board
+    // to bring the 3.3V SPI pin up to 5V logic
     int32_t err = fgr_ws2812_chain_init(CONFIG_BORIS_EYES_WS2812_SPI_NUM, -1,
-                                        CONFIG_BORIS_EYES_WS2812_LED_PIN, 1,
+                                        CONFIG_BORIS_EYES_WS2812_LED_PIN, 3,
                                         CONFIG_BORIS_EYES_WS2812_GRB,
                                         &eyes->ws2812_handle);
     if (err == ESP_OK) {
