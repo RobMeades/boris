@@ -59,7 +59,7 @@
 #define CIGAR_PUFF_UPDATE_MS 20
 
 // Minimum (e.g. ember) glow for the cigar (out of 0 - 255).
-#define CIGAR_MIN_DUTY_LEVEL 64
+#define CIGAR_MIN_DUTY_LEVEL 120
 
 // Peak-puff for the cigar.
 #define CIGAR_MAX_DUTY_LEVEL 255
@@ -68,31 +68,31 @@
 // (i.e. one "lub-dup" sequence plus the rest before the next).
 // 800 ms = 75 bpm is a resting adult heart rate, but
 // Boris is a bit more relaxed than that.
-#define HEARTBEAT_PERIOD_MS 1600
+#define HEARTBEAT_PERIOD_MS 2000
 
 // Duration of the "lub" (first) pulse in milliseconds.
-#define HEARTBEAT_LUB_MS 160
+#define HEARTBEAT_LUB_MS 80
 
 // Duration of the "dup" (second) pulse in milliseconds.
-#define HEARTBEAT_DUP_MS 120
+#define HEARTBEAT_DUP_MS 240
 
 // Gap between the end of "lub" and the start of "dup".
-#define HEARTBEAT_GAP_MS 180
+#define HEARTBEAT_GAP_MS 80
 
 // Servo angle at rest, in degrees.
 #define HEARTBEAT_REST_ANGLE 0
 
 // Servo angle at the peak of each pulse, in degrees.
-#define HEARTBEAT_PEAK_ANGLE 90
+#define HEARTBEAT_PEAK_ANGLE 15
 
 // The maximum eye-flash interval in seconds
 #define EYES_INTERVAL_MAX_SECONDS 15
 
 // The minumum eye-flash interval in seconds
-#define EYES_INTERVAL_MIN_SECONDS 5
+#define EYES_INTERVAL_MIN_SECONDS 10
 
 // Eye flash duration in milliseconds
-#define EYES_FLASH_DURATION_MS 500
+#define EYES_FLASH_DURATION_MS 2000
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -187,16 +187,31 @@ static const uint8_t g_cigar_sine[] = {
 // All the possible eye colours.
 static fgr_ws2812_colour_t g_eye_colour[] = {FGR_WS2812_LED_COLOUR_BRIGHT_RED,
                                              FGR_WS2812_LED_COLOUR_BRIGHT_BLUE,
-                                             FGR_WS2812_LED_COLOUR_BRIGHT_GREEN,
-                                             FGR_WS2812_LED_COLOUR_BRIGHT_YELLOW,
-                                             FGR_WS2812_LED_COLOUR_BRIGHT_MAGENTA,
-                                             FGR_WS2812_LED_COLOUR_BRIGHT_CYAN};
+                                             FGR_WS2812_LED_COLOUR_BRIGHT_BLUE,
+                                             FGR_WS2812_LED_COLOUR_BRIGHT_BLUE,
+                                             FGR_WS2812_LED_COLOUR_BRIGHT_BLUE};
 // The names of the eye colours.
-static char * g_eye_colour_name[] = {"red","blue", "green", "yellow", "magenta", "cyan"};
+static char * g_eye_colour_name[] = {"red","blue", "blue", "blue", "blue"};
 
 // Do some checking
 _Static_assert (FGR_UTIL_ARRAY_LENGTH(g_eye_colour) == FGR_UTIL_ARRAY_LENGTH(g_eye_colour_name),
                 "the number of g_eye_colour_name[] entries does not match the number of eye colours!");
+
+#endif
+
+#if defined(CONFIG_BORIS_HEARTBEAT_SERVO_PIN) && (CONFIG_BORIS_HEARTBEAT_SERVO_PIN >= 0)
+
+// A half-cosine ramp, Q8 fixed point: value 0 at index 0, 256 at
+// index (array_size - 1), with zero slope at both ends.
+// Generated as round((1 - cos(pi * i / (array_size - 1))) / 2 * 256)
+// for i = 0 .. array_size - 1.
+static const uint16_t g_heartbeat_ramp[] = {
+      0,   1,   2,   6,  10,  15,  22,  29,
+     37,  47,  57,  68,  79,  91, 103, 115,
+    128, 141, 153, 165, 177, 188, 199, 209,
+    218, 227, 234, 241, 246, 250, 254, 255,
+    256
+};
 
 #endif
 
@@ -337,25 +352,49 @@ static void eyes_deinit(eyes_t *eyes)
 
 #if defined(CONFIG_BORIS_HEARTBEAT_SERVO_PIN) && (CONFIG_BORIS_HEARTBEAT_SERVO_PIN >= 0)
 
-// Move to the given phase and command the servo accordingly.
+// Move to the given phase.
 static void heartbeat_enter_phase(heartbeat_t *heartbeat,
                                   heartbeat_phase_t phase,
                                   int64_t now_us)
 {
     heartbeat->phase = phase;
     heartbeat->phase_started_us = now_us;
+}
 
-    switch (phase) {
-        case HEARTBEAT_PHASE_LUB:
-        case HEARTBEAT_PHASE_DUP:
-            servo_set_angle(heartbeat->servo, HEARTBEAT_PEAK_ANGLE);
-        break;
-        case HEARTBEAT_PHASE_REST:
-        case HEARTBEAT_PHASE_GAP:
-        default:
-            servo_set_angle(heartbeat->servo, HEARTBEAT_REST_ANGLE);
-        break;
+// Return the angle for a pulse phase (LUB or DUP) at time
+// elapsed_us through a phase of length phase_length_us.  The pulse
+// rises to HEARTBEAT_PEAK_ANGLE at the midpoint and falls back to
+// HEARTBEAT_REST_ANGLE, using the half-cosine ramp so that the
+// velocity is zero at the start, the peak and the end.
+static int32_t heartbeat_pulse_angle(int64_t elapsed_us,
+                                     int64_t phase_length_us)
+{
+    int32_t angle_degrees = HEARTBEAT_REST_ANGLE;
+
+    if ((elapsed_us > 0) && (elapsed_us < phase_length_us)) {
+
+        int64_t half = phase_length_us / 2;
+        int64_t us_from_edge;
+
+        if (elapsed_us < half) {
+            // Rising edge
+            us_from_edge = elapsed_us;
+        } else {
+            // Falling edge
+            us_from_edge = phase_length_us - elapsed_us;
+        }
+
+        // us_from_edge is in (0, half]
+        size_t x = (uint32_t) ((us_from_edge * (FGR_UTIL_ARRAY_LENGTH(g_heartbeat_ramp) - 1)) / half);
+        if (x >= FGR_UTIL_ARRAY_LENGTH(g_heartbeat_ramp)) {
+            x = FGR_UTIL_ARRAY_LENGTH(g_heartbeat_ramp) - 1;
+        }
+
+        uint16_t ramp = g_heartbeat_ramp[x];
+        angle_degrees =  HEARTBEAT_REST_ANGLE + (((HEARTBEAT_PEAK_ANGLE - HEARTBEAT_REST_ANGLE) * (int32_t) ramp) >> 8);
     }
+
+    return angle_degrees;
 }
 
 // Heartbeat task callback
@@ -380,6 +419,7 @@ static void task_heartbeat_cb(void *handle, void *param)
             phase_length_us = HEARTBEAT_DUP_MS * 1000;
         break;
         case HEARTBEAT_PHASE_REST:
+        // Deliberate fall-through
         default:
             phase_length_us = (HEARTBEAT_PERIOD_MS * 1000) -
                               (HEARTBEAT_LUB_MS * 1000) -
@@ -388,7 +428,18 @@ static void task_heartbeat_cb(void *handle, void *param)
         break;
     }
 
-    if (elapsed_us > phase_length_us) {
+    if (elapsed_us < phase_length_us) {
+        // Mid-phase: drive the servo to the interpolated angle
+        int32_t angle;
+        if ((heartbeat->phase == HEARTBEAT_PHASE_LUB) ||
+            (heartbeat->phase == HEARTBEAT_PHASE_DUP)) {
+            angle = heartbeat_pulse_angle(elapsed_us, phase_length_us);
+        } else {
+            angle = HEARTBEAT_REST_ANGLE;
+        }
+        servo_set_angle(heartbeat->servo, angle);
+    } else {
+        // Phase has ended: advance to the next phase
         switch (heartbeat->phase) {
             case HEARTBEAT_PHASE_REST:
                 heartbeat_enter_phase(heartbeat, HEARTBEAT_PHASE_LUB, now_us);
@@ -400,6 +451,7 @@ static void task_heartbeat_cb(void *handle, void *param)
                 heartbeat_enter_phase(heartbeat, HEARTBEAT_PHASE_DUP, now_us);
             break;
             case HEARTBEAT_PHASE_DUP:
+            // Deliberate fall-through
             default:
                 heartbeat_enter_phase(heartbeat, HEARTBEAT_PHASE_REST, now_us);
             break;
@@ -411,14 +463,15 @@ static void task_heartbeat_cb(void *handle, void *param)
 static int32_t heartbeat_init(heartbeat_t *heartbeat)
 {
     int32_t err = ESP_FAIL; // Note: this is already a NEGATIVE error code (-1)
+
     heartbeat->servo = servo_create(CONFIG_BORIS_HEARTBEAT_SERVO_PIN,
                                     LEDC_LOW_SPEED_MODE,
                                     CONFIG_BORIS_HEARTBEAT_SERVO_PWM_TIMER,
-                                    CONFIG_BORIS_HEARTBEAT_SERVO_PWM_TIMER);
+                                    CONFIG_BORIS_HEARTBEAT_SERVO_PWM_CHANNEL);
     if (heartbeat->servo) {
-        err= fgr_task_create(&task_heartbeat_cb, heartbeat, "heartbeat",
-                             3000,
-                             3, &heartbeat->task_handle);
+        err = fgr_task_create(&task_heartbeat_cb, heartbeat, "heartbeat",
+                              3000,
+                              3, &heartbeat->task_handle);
     }
 
     if (err == ESP_OK) {
